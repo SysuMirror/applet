@@ -1,0 +1,10 @@
+node_modules/
+.env
+data/secrets.json
+data/uploads/
+screenshots/
+logs/
+*.log
+
+# 运行期数据（密钥、上传、平台托管构建）
+data/

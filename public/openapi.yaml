@@ -1,0 +1,1717 @@
+openapi: 3.1.0
+info:
+  title: 集市小程序开放平台 API
+  version: 1.1.0
+  description: |
+    小程序平台服务：应用目录、启动票据、小程序会话、用户偏好、设备与推送、
+    新帖事件、反馈、语音合成代理、开发者开放平台、平台管理后台。
+
+    - 客户端接口使用 `Authorization: Bearer <main_access_token>`（主站 / UniSSO token）
+      或小程序会话 Cookie `mp_session`。
+    - 开发者接口使用开放平台登录 Cookie `mp_dev`（登录/注册响应里也会返回 `token`）。
+    - 管理后台与开发者共用 `mp_dev` Cookie，但账号角色必须是 `admin`。
+    - 第三方小程序服务端使用 `X-App-Key` + `X-App-Timestamp` + `X-App-Nonce` + `X-App-Signature`。
+    - 内部接口使用 `X-Internal-*` HMAC 签名。
+
+    所有错误响应格式统一为 `{ code, message, requestId }`；限流返回 429 并带 `Retry-After`。
+    路径均为完整路径（不再按 server 前缀拆分，避免 `/v1/apps` 与 `/dev/v1/apps` 冲突）。
+servers:
+  - url: /
+    description: 当前部署（公网为 https://applet.ssemarket.cn，本地为 http://localhost:8080）
+
+tags:
+  - name: Catalog
+  - name: Session
+  - name: Prefs
+  - name: Grants
+  - name: Devices
+  - name: Events
+  - name: Feedback
+  - name: TTS
+  - name: Developer
+  - name: Admin
+  - name: SSO
+  - name: Internal
+  - name: AppServer
+  - name: Ops
+
+paths:
+  # ── 客户端：目录 ────────────────────────────────────────────────────────
+  /v1/apps:
+    get:
+      tags: [Catalog]
+      summary: 小程序目录
+      security: [{ mainToken: [] }, {}]
+      parameters:
+        - { name: category, in: query, schema: { type: string } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 50 } }
+      responses:
+        '200':
+          description: 目录列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/PublicApp' } }
+                  nextCursor: { type: [string, 'null'] }
+  /v1/apps/{appKey}:
+    get:
+      tags: [Catalog]
+      summary: 小程序详情
+      security: [{ mainToken: [] }, {}]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200':
+          description: 详情
+          content:
+            application/json:
+              schema: { type: object, properties: { app: { $ref: '#/components/schemas/PublicApp' } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/categories:
+    get:
+      tags: [Catalog]
+      summary: 分类列表
+      responses:
+        '200':
+          description: 分类
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { type: object, properties: { key: { type: string }, name: { type: string } } }
+  /v1/search:
+    get:
+      tags: [Catalog]
+      summary: 搜索小程序（名称 / 拼音 / 关键词）
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, maxLength: 64 } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 50 } }
+      responses:
+        '200':
+          description: 搜索结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/PublicApp' } }
+
+  # ── 客户端：票据与会话 ──────────────────────────────────────────────────
+  /v1/launch-tickets:
+    post:
+      tags: [Session]
+      summary: 申请一次性启动票据
+      security: [{ mainToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appKey]
+              properties:
+                appKey: { type: string }
+                deviceID: { type: string, maxLength: 128 }
+                origin: { type: string, format: uri, description: 必须在该小程序 allowedOrigins 内；缺省取第一个登记的 origin }
+      responses:
+        '201':
+          description: 票据
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ticket: { type: string }
+                  launchURL: { type: string, format: uri }
+                  expiresIn: { type: integer, example: 60 }
+                  expiresAt: { type: string, format: date-time }
+                  app: { $ref: '#/components/schemas/PublicApp' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/sessions/exchange:
+    post:
+      tags: [Session]
+      summary: 票据换小程序会话（原子消费）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticket]
+              properties: { ticket: { type: string, maxLength: 128 } }
+      responses:
+        '200':
+          description: 会话（同时 Set-Cookie mp_session）
+          headers:
+            Set-Cookie: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+                  sessionToken: { type: string, description: 交给小程序自己的服务端调用 /app/v1/sessions/verify；勿持久化 }
+                  app: { $ref: '#/components/schemas/PublicApp' }
+                  expiresIn: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/sessions/me:
+    get:
+      tags: [Session]
+      summary: 当前会话（滑动续期）
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 会话
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+                  app: { $ref: '#/components/schemas/PublicApp' }
+    delete:
+      tags: [Session]
+      summary: 注销当前会话
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 已注销
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+
+  # ── 客户端：偏好 / 授权 ─────────────────────────────────────────────────
+  /v1/me/prefs:
+    get:
+      tags: [Prefs]
+      summary: 最近使用与我的小程序
+      security: [{ mainToken: [] }, { sessionCookie: [] }]
+      responses:
+        '200':
+          description: 偏好
+          content: { application/json: { schema: { $ref: '#/components/schemas/Prefs' } } }
+    put:
+      tags: [Prefs]
+      summary: 同步偏好
+      security: [{ mainToken: [] }, { sessionCookie: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                recent: { type: array, items: { type: string }, maxItems: 20 }
+                favorites: { type: array, items: { type: string }, maxItems: 50 }
+      responses:
+        '200':
+          description: 规范化后的偏好
+          content: { application/json: { schema: { $ref: '#/components/schemas/Prefs' } } }
+  /v1/me/prefs/import:
+    post:
+      tags: [Prefs]
+      summary: 导入旧版本地数据（每小时 5 次）
+      security: [{ mainToken: [] }, { sessionCookie: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                recent: { type: array, items: { oneOf: [{ type: string }, { type: object, properties: { appKey: { type: string } } }] } }
+                favorites: { type: array, items: { oneOf: [{ type: string }, { type: object, properties: { appKey: { type: string } } }] } }
+      responses:
+        '200':
+          description: 已导入
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Prefs'
+                  - type: object
+                    properties: { imported: { type: boolean } }
+  /v1/me/grants:
+    get:
+      tags: [Grants]
+      summary: 已授权的小程序列表
+      security: [{ mainToken: [] }]
+      responses:
+        '200':
+          description: 授权记录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { type: object, properties: { appKey: { type: string }, scopes: { type: array, items: { type: string } }, grantedAt: { type: string, format: date-time } } }
+  /v1/me/grants/{appKey}:
+    delete:
+      tags: [Grants]
+      summary: 撤销某个小程序的授权
+      security: [{ mainToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200':
+          description: 已撤销
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean } } } } }
+
+  # ── 客户端：设备与订阅 ──────────────────────────────────────────────────
+  /v1/devices:
+    post:
+      tags: [Devices]
+      summary: 注册 / 更新设备推送 token
+      security: [{ mainToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceID, platform]
+              properties:
+                deviceID: { type: string, minLength: 3, maxLength: 128 }
+                platform: { type: string, enum: [android, ohos, windows, ios, web] }
+                appVersion: { type: string, maxLength: 32 }
+                pushProvider: { type: string, enum: [fcm, hms, apns, wns, local], default: local }
+                pushToken: { type: string, maxLength: 2048 }
+                notificationEnabled: { type: boolean, default: true }
+                locale: { type: string, maxLength: 20 }
+      responses:
+        '201':
+          description: 已登记（token 以掩码返回）
+          content:
+            application/json:
+              schema: { type: object, properties: { device: { $ref: '#/components/schemas/Device' } } }
+    get:
+      tags: [Devices]
+      summary: 设备列表
+      security: [{ mainToken: [] }]
+      responses:
+        '200':
+          description: 设备列表
+          content:
+            application/json:
+              schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Device' } } } }
+  /v1/devices/{deviceID}:
+    delete:
+      tags: [Devices]
+      summary: 注销设备
+      security: [{ mainToken: [] }]
+      parameters:
+        - { name: deviceID, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 已删除
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean } } } } }
+  /v1/me/subscriptions:
+    get:
+      tags: [Events]
+      summary: 查看订阅
+      security: [{ mainToken: [] }]
+      responses:
+        '200':
+          description: 订阅
+          content: { application/json: { schema: { $ref: '#/components/schemas/Subscriptions' } } }
+    put:
+      tags: [Events]
+      summary: 更新订阅与静默时段
+      security: [{ mainToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                topics:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      topic: { type: string, enum: [new_posts] }
+                      enabled: { type: boolean }
+                      quietHours:
+                        type: [object, 'null']
+                        properties:
+                          from: { type: string, example: '23:00' }
+                          to: { type: string, example: '07:00' }
+      responses:
+        '200':
+          description: 更新后的订阅
+          content: { application/json: { schema: { $ref: '#/components/schemas/Subscriptions' } } }
+  /v1/events/new-posts:
+    get:
+      tags: [Events]
+      summary: 新帖提醒轮询（推送兜底）
+      security: [{ mainToken: [] }]
+      parameters:
+        - { name: since, in: query, schema: { type: string, format: date-time }, description: 默认最近 24 小时 }
+        - { name: limit, in: query, schema: { type: integer, default: 30, maximum: 100 } }
+      responses:
+        '200':
+          description: 通知列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+                  unread: { type: integer }
+  /v1/me/notifications/read:
+    post:
+      tags: [Events]
+      summary: 标记通知已读（按 id 或全部）
+      security: [{ mainToken: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: integer } }
+                all: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 已更新
+          content: { application/json: { schema: { type: object, properties: { updated: { type: integer } } } } }
+  /v1/feedback:
+    post:
+      tags: [Feedback]
+      summary: 提交反馈（每小时 5 次）
+      security: [{ mainToken: [] }, { sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, minLength: 2, maxLength: 1000 }
+                appKey: { type: string }
+                contact: { type: string, maxLength: 200 }
+      responses:
+        '201': { description: 已提交 }
+
+  # ── 客户端：语音合成代理（Voice Studio） ────────────────────────────────
+  /v1/tts/me:
+    get:
+      tags: [TTS]
+      summary: 语音服务账号信息（代理）
+      responses:
+        '200': { description: 上游 JSON }
+        '503': { $ref: '#/components/responses/Error' }
+  /v1/tts/base-models:
+    get:
+      tags: [TTS]
+      summary: 基础模型列表（代理）
+      responses:
+        '200': { description: 上游 JSON }
+  /v1/tts/voices:
+    get:
+      tags: [TTS]
+      summary: 音色列表（代理，支持上游查询参数）
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200': { description: 上游 JSON }
+  /v1/tts/voices/{runId}/sample:
+    get:
+      tags: [TTS]
+      summary: 音色试听
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/Audio' }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/tts:
+    post:
+      tags: [TTS]
+      summary: 文本合成语音
+      parameters:
+        - { name: timeout, in: query, schema: { type: integer, minimum: 5, maximum: 600, default: 60 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, maxLength: 5000 }
+                voice_id: { type: string }
+                run_id: { type: string }
+                base_model: { type: string }
+                ref_asset_id: { type: string }
+      responses:
+        '200':
+          description: 音频（audio/*）或上游任务 JSON
+          content:
+            audio/*: { schema: { type: string, format: binary } }
+            application/json: { schema: { type: object } }
+        '400': { $ref: '#/components/responses/Error' }
+  /v1/tts/songs:
+    get:
+      tags: [TTS]
+      summary: 歌曲列表（代理）
+      responses:
+        '200': { description: 上游 JSON }
+  /v1/tts/covers:
+    get:
+      tags: [TTS]
+      summary: 翻唱任务列表（代理）
+      responses:
+        '200': { description: 上游 JSON }
+    post:
+      tags: [TTS]
+      summary: 创建翻唱任务（代理）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_id]
+              properties:
+                song_id: { type: string }
+                run_id: { type: string }
+                voice_id: { type: string }
+      responses:
+        '200': { description: 上游 JSON }
+        '400': { $ref: '#/components/responses/Error' }
+  /v1/tts/covers/{coverId}:
+    get:
+      tags: [TTS]
+      summary: 翻唱任务状态（代理）
+      parameters:
+        - { name: coverId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 上游 JSON }
+  /v1/tts/covers/{coverId}/audio:
+    get:
+      tags: [TTS]
+      summary: 翻唱音频（代理）
+      parameters:
+        - { name: coverId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/Audio' }
+  /v1/tts/tasks/{jobId}:
+    get:
+      tags: [TTS]
+      summary: 合成任务状态（代理）
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 上游 JSON }
+  /v1/tts/tasks/{jobId}/audio:
+    get:
+      tags: [TTS]
+      summary: 合成任务音频（代理）
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/Audio' }
+
+  # ── 开发者：账号 ────────────────────────────────────────────────────────
+  /dev/v1/auth/register:
+    post:
+      tags: [Developer]
+      summary: 注册开发者
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, displayName]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, maxLength: 128 }
+                displayName: { type: string, minLength: 1, maxLength: 32 }
+                orgName: { type: string, maxLength: 64 }
+                phone: { type: string, maxLength: 32 }
+      responses:
+        '201':
+          description: 注册成功，同时 Set-Cookie mp_dev
+          content:
+            application/json:
+              schema: { type: object, properties: { developer: { $ref: '#/components/schemas/Developer' }, token: { type: string } } }
+        '409': { $ref: '#/components/responses/Error' }
+  /dev/v1/auth/login:
+    post:
+      tags: [Developer]
+      summary: 开发者登录
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: 登录成功，同时 Set-Cookie mp_dev
+          content:
+            application/json:
+              schema: { type: object, properties: { developer: { $ref: '#/components/schemas/Developer' }, token: { type: string } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /dev/v1/auth/logout:
+    post:
+      tags: [Developer]
+      summary: 退出登录
+      security: [{ devCookie: [] }]
+      responses:
+        '200':
+          description: 已退出
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean } } } } }
+  /dev/v1/auth/me:
+    get:
+      tags: [Developer]
+      summary: 当前开发者
+      security: [{ devCookie: [] }]
+      responses:
+        '200':
+          description: 开发者资料
+          content: { application/json: { schema: { type: object, properties: { developer: { $ref: '#/components/schemas/Developer' } } } } }
+    patch:
+      tags: [Developer]
+      summary: 修改资料（称呼 / 组织 / 电话）
+      security: [{ devCookie: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: string, minLength: 1, maxLength: 32 }
+                orgName: { type: string, maxLength: 64 }
+                phone: { type: string, maxLength: 32 }
+      responses:
+        '200':
+          description: 更新后的资料
+          content: { application/json: { schema: { type: object, properties: { developer: { $ref: '#/components/schemas/Developer' } } } } }
+  /dev/v1/auth/password:
+    post:
+      tags: [Developer]
+      summary: 修改密码（会使其他设备登录态失效）
+      security: [{ devCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        '200':
+          description: 已修改，返回新 token
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean }, token: { type: string } } } } }
+        '401': { $ref: '#/components/responses/Error' }
+
+  # ── 开发者：工作台 ──────────────────────────────────────────────────────
+  /dev/v1/overview:
+    get:
+      tags: [Developer]
+      summary: 工作台概览
+      security: [{ devCookie: [] }]
+      responses:
+        '200':
+          description: 概览
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  developer: { $ref: '#/components/schemas/Developer' }
+                  stats:
+                    type: object
+                    properties:
+                      apps: { type: integer }
+                      published: { type: integer }
+                      reviewing: { type: integer }
+                      drafts: { type: integer }
+                      calls14d: { type: integer }
+                  recentApps: { type: array, items: { $ref: '#/components/schemas/DevApp' } }
+  /dev/v1/categories:
+    get:
+      tags: [Developer]
+      summary: 分类与可选权限
+      security: [{ devCookie: [] }]
+      responses:
+        '200':
+          description: 分类 / scopes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { type: object, properties: { key: { type: string }, name: { type: string } } } }
+                  scopes: { type: array, items: { type: string } }
+
+  # ── 开发者：小程序 ──────────────────────────────────────────────────────
+  /dev/v1/apps:
+    get:
+      tags: [Developer]
+      summary: 我的小程序
+      security: [{ devCookie: [] }]
+      responses:
+        '200':
+          description: 列表
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/DevApp' } } } } } }
+    post:
+      tags: [Developer]
+      summary: 创建小程序（每小时 20 次）
+      security: [{ devCookie: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateApp' } } }
+      responses:
+        '201':
+          description: 已创建
+          content: { application/json: { schema: { type: object, properties: { app: { $ref: '#/components/schemas/DevApp' } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /dev/v1/apps/{appKey}:
+    get:
+      tags: [Developer]
+      summary: 小程序详情（含版本与白名单）
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200':
+          description: 详情
+          content: { application/json: { schema: { type: object, properties: { app: { $ref: '#/components/schemas/DevAppDetail' } } } } }
+    patch:
+      tags: [Developer]
+      summary: 更新小程序配置（审核中不可修改）
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateApp' } } }
+      responses:
+        '200': { description: 已更新 }
+        '409': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [Developer]
+      summary: 删除小程序（草稿 / 已驳回 / 已下架）
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200': { description: 已删除 }
+        '409': { $ref: '#/components/responses/Error' }
+  /dev/v1/apps/{appKey}/secret/reveal:
+    post:
+      tags: [Developer]
+      summary: 查看 AppSecret（每小时 10 次，写审计）
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200':
+          description: AppSecret
+          content: { application/json: { schema: { type: object, properties: { appKey: { type: string }, secret: { type: string } } } } }
+  /dev/v1/apps/{appKey}/secret/rotate:
+    post:
+      tags: [Developer]
+      summary: 重置 AppSecret（旧密钥立即失效）
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200':
+          description: 新 AppSecret
+          content: { application/json: { schema: { type: object, properties: { appKey: { type: string }, secret: { type: string } } } } }
+  /dev/v1/apps/{appKey}/versions:
+    get:
+      tags: [Developer]
+      summary: 版本列表
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200':
+          description: 版本
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/Version' } } } } } }
+    post:
+      tags: [Developer]
+      summary: 创建草稿版本
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string }
+                entryURL: { type: string, format: uri }
+                allowedOrigins: { type: array, items: { type: string, format: uri } }
+                scopes: { type: array, items: { type: string } }
+                changelog: { type: string, maxLength: 2000 }
+      responses:
+        '201':
+          description: 版本已创建
+          content: { application/json: { schema: { type: object, properties: { version: { $ref: '#/components/schemas/Version' } } } } }
+  /dev/v1/apps/{appKey}/submit:
+    post:
+      tags: [Developer]
+      summary: 提交审核（每小时 20 次）
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, changelog]
+              properties:
+                version: { type: string }
+                changelog: { type: string, maxLength: 2000 }
+                entryURL: { type: string, format: uri }
+                allowedOrigins: { type: array, items: { type: string, format: uri } }
+                scopes: { type: array, items: { type: string } }
+      responses:
+        '200': { description: 已进入审核 }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /dev/v1/apps/{appKey}/publish:
+    post:
+      tags: [Developer]
+      summary: 发布审核通过的版本
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { versionId: { type: integer, description: 缺省取最新 approved 版本 } }
+      responses:
+        '200': { description: 已发布 }
+        '409': { $ref: '#/components/responses/Error' }
+  /dev/v1/apps/{appKey}/unpublish:
+    post:
+      tags: [Developer]
+      summary: 下架小程序
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200': { description: 已下架 }
+        '409': { $ref: '#/components/responses/Error' }
+  /dev/v1/apps/{appKey}/stats:
+    get:
+      tags: [Developer]
+      summary: 调用统计
+      security: [{ devCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AppKey' }
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 90, default: 14 } }
+      responses:
+        '200':
+          description: 统计
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  appKey: { type: string }
+                  days: { type: integer }
+                  items: { type: array, items: { type: object, properties: { day: { type: string }, calls: { type: integer }, users: { type: integer } } } }
+  /dev/v1/apps/{appKey}/audit-logs:
+    get:
+      tags: [Developer]
+      summary: 该小程序的审计记录
+      security: [{ devCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AppKey' }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200':
+          description: 审计
+          content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/AuditLog' } } } } } }
+
+  # ── 开发者：上传与内部托管 ──────────────────────────────────────────────
+  /dev/v1/uploads:
+    post:
+      tags: [Developer]
+      summary: 上传图标（原始二进制，≤2MB，每小时 30 次）
+      security: [{ devCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          image/png: { schema: { type: string, format: binary } }
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+          image/gif: { schema: { type: string, format: binary } }
+      responses:
+        '201':
+          description: 已保存
+          content: { application/json: { schema: { type: object, properties: { url: { type: string, format: uri }, path: { type: string } } } } }
+  /dev/v1/apps/{appKey}/hosting:
+    get:
+      tags: [Developer]
+      summary: 托管状态
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200':
+          description: 托管信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode: { type: string, enum: [internal, external] }
+                  build: { type: string }
+                  entryURL: { type: string, format: uri }
+                  updatedAt: { type: [string, 'null'], format: date-time }
+    delete:
+      tags: [Developer]
+      summary: 停用内部托管（回到外部 entryURL）
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200': { description: 已停用 }
+  /dev/v1/apps/{appKey}/hosting/builds:
+    post:
+      tags: [Developer]
+      summary: 创建内部托管构建（仅官方应用）
+      security: [{ devCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '201':
+          description: 构建已创建
+          content: { application/json: { schema: { type: object, properties: { buildId: { type: string }, appKey: { type: string } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /dev/v1/apps/{appKey}/hosting/builds/{buildId}/files:
+    put:
+      tags: [Developer]
+      summary: 上传构建文件（单文件 ≤5MB，构建 ≤300 文件 / 25MB）
+      security: [{ devCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AppKey' }
+        - { name: buildId, in: path, required: true, schema: { type: string } }
+        - { name: path, in: query, required: true, schema: { type: string }, description: 构建内相对路径，例如 index.html }
+      requestBody:
+        required: true
+        content: { application/octet-stream: { schema: { type: string, format: binary } } }
+      responses:
+        '201':
+          description: 已上传
+          content: { application/json: { schema: { type: object, properties: { path: { type: string }, size: { type: integer }, files: { type: integer }, bytes: { type: integer } } } } }
+  /dev/v1/apps/{appKey}/hosting/builds/{buildId}/activate:
+    post:
+      tags: [Developer]
+      summary: 激活构建（必须含 index.html，返回 source token）
+      security: [{ devCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AppKey' }
+        - { name: buildId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 已激活
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  appKey: { type: string }
+                  mode: { type: string, enum: [internal] }
+                  build: { type: string }
+                  entryURL: { type: string, format: uri }
+                  sourceToken: { type: string }
+                  files: { type: integer }
+                  bytes: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+
+  # ── 管理后台 ────────────────────────────────────────────────────────────
+  /admin/v1/me:
+    get:
+      tags: [Admin]
+      summary: 当前管理员
+      security: [{ adminCookie: [] }]
+      responses:
+        '200':
+          description: 管理员
+          content:
+            application/json:
+              schema: { type: object, properties: { admin: { type: object, properties: { id: { type: integer }, email: { type: string }, displayName: { type: string }, avatarUrl: { type: string }, role: { type: string } } } } }
+  /admin/v1/overview:
+    get:
+      tags: [Admin]
+      summary: 平台概览与待审队列
+      security: [{ adminCookie: [] }]
+      responses:
+        '200':
+          description: 概览
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  counts:
+                    type: object
+                    properties:
+                      apps: { type: integer }
+                      published: { type: integer }
+                      reviewing: { type: integer }
+                      developers: { type: integer }
+                      events24h: { type: integer }
+                      notifications24h: { type: integer }
+                      launches24h: { type: integer }
+                      openFeedback: { type: integer }
+                  pending:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        appKey: { type: string }
+                        name: { type: string }
+                        icon: { type: string }
+                        category: { type: string }
+                        developerId: { type: integer }
+                        versionId: { type: [integer, 'null'] }
+                        version: { type: string }
+                        changelog: { type: string }
+                        submittedAt: { type: string, format: date-time }
+  /admin/v1/apps:
+    get:
+      tags: [Admin]
+      summary: 全部小程序（游标分页 / 搜索 / 状态筛选）
+      security: [{ adminCookie: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [draft, reviewing, approved, rejected, published, offline] } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 30 } }
+      responses:
+        '200':
+          description: 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/DevApp' } }
+                  nextCursor: { type: [string, 'null'] }
+    post:
+      tags: [Admin]
+      summary: 新建官方小程序（直接发布）
+      security: [{ adminCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/CreateApp'
+                - type: object
+                  required: [name, entryURL]
+                  properties:
+                    sort: { type: integer }
+                    status: { type: string, enum: [published] }
+      responses:
+        '201': { description: 已创建 }
+  /admin/v1/apps/{appKey}:
+    get:
+      tags: [Admin]
+      summary: 小程序详情（含版本、统计）
+      security: [{ adminCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200': { description: 详情 }
+    patch:
+      tags: [Admin]
+      summary: 更新小程序
+      security: [{ adminCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      requestBody:
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateApp' } } }
+      responses:
+        '200': { description: 已更新 }
+  /admin/v1/apps/{appKey}/approve:
+    post:
+      tags: [Admin]
+      summary: 审核通过
+      security: [{ adminCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                versionId: { type: integer }
+                note: { type: string }
+      responses:
+        '200': { description: 已通过 }
+        '409': { $ref: '#/components/responses/Error' }
+  /admin/v1/apps/{appKey}/reject:
+    post:
+      tags: [Admin]
+      summary: 驳回
+      security: [{ adminCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                versionId: { type: integer }
+                reason: { type: string, minLength: 2, maxLength: 500 }
+      responses:
+        '200': { description: 已驳回 }
+        '409': { $ref: '#/components/responses/Error' }
+  /admin/v1/apps/{appKey}/publish:
+    post:
+      tags: [Admin]
+      summary: 发布版本
+      security: [{ adminCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { versionId: { type: integer } }
+      responses:
+        '200': { description: 已发布 }
+  /admin/v1/apps/{appKey}/unpublish:
+    post:
+      tags: [Admin]
+      summary: 强制下架
+      security: [{ adminCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      responses:
+        '200': { description: 已下架 }
+  /admin/v1/apps/{appKey}/allowlist:
+    put:
+      tags: [Admin]
+      summary: 设置白名单 visible=allowlist
+      security: [{ adminCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/AppKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userIds]
+              properties: { userIds: { type: array, items: { type: string } } }
+      responses:
+        '200':
+          description: 已更新
+          content: { application/json: { schema: { type: object, properties: { userIds: { type: array, items: { type: string } } } } } }
+  /admin/v1/developers:
+    get:
+      tags: [Admin]
+      summary: 开发者列表
+      security: [{ adminCookie: [] }]
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200':
+          description: 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/Developer'
+                        - type: object
+                          properties:
+                            orgName: { type: string }
+                            phone: { type: string }
+                            status: { type: string, enum: [active, suspended] }
+                            emailVerified: { type: boolean }
+                            appCount: { type: integer }
+                            lastLoginAt: { type: [string, 'null'], format: date-time }
+  /admin/v1/developers/{id}:
+    patch:
+      tags: [Admin]
+      summary: 停用 / 启用开发者
+      security: [{ adminCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties: { status: { type: string, enum: [active, suspended] } }
+      responses:
+        '200': { description: 已更新 }
+        '409': { $ref: '#/components/responses/Error' }
+  /admin/v1/audit-logs:
+    get:
+      tags: [Admin]
+      summary: 审计日志（游标分页）
+      security: [{ adminCookie: [] }]
+      parameters:
+        - { name: action, in: query, schema: { type: string } }
+        - { name: target, in: query, schema: { type: string } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: 审计
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/AuditLog' } }
+                  nextCursor: { type: [string, 'null'] }
+  /admin/v1/events:
+    get:
+      tags: [Admin]
+      summary: 内部事件列表
+      security: [{ adminCookie: [] }]
+      parameters:
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 30 } }
+      responses:
+        '200':
+          description: 事件
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        eventId: { type: string }
+                        type: { type: string }
+                        dedupKey: { type: string }
+                        payload: { type: object }
+                        status: { type: string }
+                        receivedAt: { type: string, format: date-time }
+                        processedAt: { type: [string, 'null'], format: date-time }
+                        error: { type: [string, 'null'] }
+                  nextCursor: { type: [string, 'null'] }
+  /admin/v1/feedback:
+    get:
+      tags: [Admin]
+      summary: 用户反馈
+      security: [{ adminCookie: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [open, resolved] } }
+      responses:
+        '200':
+          description: 反馈
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        userId: { type: string }
+                        appKey: { type: string }
+                        content: { type: string }
+                        contact: { type: string }
+                        status: { type: string }
+                        createdAt: { type: string, format: date-time }
+  /admin/v1/feedback/{id}:
+    patch:
+      tags: [Admin]
+      summary: 处理反馈
+      security: [{ adminCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties: { status: { type: string, enum: [open, resolved] } }
+      responses:
+        '200': { description: 已更新 }
+
+  # ── 统一身份登录（UniSSO） ──────────────────────────────────────────────
+  /auth/sso/status:
+    get:
+      tags: [SSO]
+      summary: SSO 可用状态
+      responses:
+        '200':
+          description: 状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  provider: { type: string }
+                  enabled: { type: boolean }
+                  m2m: { type: boolean }
+                  loginUrl: { type: string }
+  /auth/sso/start:
+    get:
+      tags: [SSO]
+      summary: 开始授权跳转（已有共享会话时直接建立本地登录）
+      parameters:
+        - { name: next, in: query, schema: { type: string }, description: 登录后回跳路径，只允许站内 / 开头 }
+      responses:
+        '302': { description: 跳转到 SSO 或回跳 next }
+  /callback:
+    get:
+      tags: [SSO]
+      summary: SSO 回调（授权码 + PKCE）
+      parameters:
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string } }
+        - { name: error, in: query, schema: { type: string } }
+      responses:
+        '302': { description: 建立 mp_dev 会话后回跳 }
+  /auth/sso/m2m:
+    post:
+      tags: [SSO]
+      summary: 邮箱密码无感登录（需要平台开通内接应用 M2M）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200': { description: 已登录并 Set-Cookie mp_dev }
+        '403': { $ref: '#/components/responses/Error' }
+  /auth/sso/logout:
+    post:
+      tags: [SSO]
+      summary: 注销 SSO 共享会话
+      responses:
+        '200':
+          description: 已注销
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean } } } } }
+  /auth/sso/verify:
+    post:
+      tags: [SSO]
+      summary: App 用 SSO access_token 换平台 Bearer token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                accessToken: { type: string }
+                token: { type: string, description: accessToken 的别名 }
+      responses:
+        '200':
+          description: 平台 token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  tokenType: { type: string, example: Bearer }
+                  expiresIn: { type: integer }
+                  user:
+                    type: object
+                    properties:
+                      userId: { type: string }
+                      name: { type: string }
+                      email: { type: string }
+                      avatar: { type: string }
+                      sseSub: { type: string }
+        '401': { $ref: '#/components/responses/Error' }
+
+  # ── 内部接口（主站 outbox） ─────────────────────────────────────────────
+  /internal/v1/events/new-post:
+    post:
+      tags: [Internal]
+      summary: 新帖事件推送（HMAC 签名）
+      parameters: [{ $ref: '#/components/parameters/InternalSignature' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventID, title]
+              properties:
+                eventID: { type: string }
+                postID: { type: integer }
+                title: { type: string }
+                partition: { type: string }
+                authorUserID: { type: integer }
+                createdAt: { type: string, format: date-time }
+                dedupKey: { type: string }
+      responses:
+        '202': { description: 已接收并开始分发 }
+        '200': { description: 重复事件（已去重） }
+  /internal/v1/token/verify:
+    post:
+      tags: [Internal]
+      summary: 主站 Token 校验（HMAC 签名）
+      parameters: [{ $ref: '#/components/parameters/InternalSignature' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { token: { type: string } }
+      responses:
+        '200':
+          description: 校验结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  userID: { type: string }
+                  expiresAt: { type: string }
+
+  # ── 第三方小程序服务端 ──────────────────────────────────────────────────
+  /app/v1/apps/self:
+    get:
+      tags: [AppServer]
+      summary: 当前小程序信息（HMAC 签名）
+      parameters: [{ $ref: '#/components/parameters/AppSignature' }]
+      responses:
+        '200':
+          description: 小程序
+          content: { application/json: { schema: { type: object, properties: { app: { $ref: '#/components/schemas/PublicApp' } } } } }
+  /app/v1/apps/me:
+    get:
+      tags: [AppServer]
+      summary: 当前小程序完整配置（HMAC 签名，含开发者视角字段）
+      parameters: [{ $ref: '#/components/parameters/AppSignature' }]
+      responses:
+        '200':
+          description: 小程序
+          content: { application/json: { schema: { type: object, properties: { app: { $ref: '#/components/schemas/DevApp' } } } } }
+  /app/v1/sessions/verify:
+    post:
+      tags: [AppServer]
+      summary: 校验小程序会话（HMAC 签名）
+      parameters: [{ $ref: '#/components/parameters/AppSignature' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionToken: { type: string }
+      responses:
+        '200':
+          description: 校验结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  userId: { type: string }
+                  appKey: { type: string }
+                  scopes: { type: array, items: { type: string } }
+                  deviceId: { type: string }
+                  expiresAt: { type: string }
+
+  # ── 运维 ────────────────────────────────────────────────────────────────
+  /healthz:
+    get:
+      tags: [Ops]
+      summary: 进程健康检查
+      responses:
+        '200': { description: 进程存活 }
+  /readyz:
+    get:
+      tags: [Ops]
+      summary: 就绪检查（MySQL 可用）
+      responses:
+        '200': { description: '{"ok":true,"db":"up"}' }
+        '503': { description: 数据库不可用 }
+  /metrics:
+    get:
+      tags: [Ops]
+      summary: Prometheus 指标（可配 MP_METRICS_TOKEN 要求 Bearer）
+      security: [{ metricsToken: [] }, {}]
+      responses:
+        '200':
+          description: 指标文本
+          content: { text/plain: { schema: { type: string } } }
+
+components:
+  securitySchemes:
+    mainToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 主站 / UniSSO access token（平台只验签，不保存 refresh token）
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: mp_session
+    devCookie:
+      type: apiKey
+      in: cookie
+      name: mp_dev
+    adminCookie:
+      type: apiKey
+      in: cookie
+      name: mp_dev
+    metricsToken:
+      type: http
+      scheme: bearer
+
+  parameters:
+    AppKey:
+      name: appKey
+      in: path
+      required: true
+      schema: { type: string }
+    InternalSignature:
+      name: X-Internal-Signature
+      in: header
+      required: true
+      description: 另需 X-Internal-Timestamp / X-Internal-Nonce
+      schema: { type: string }
+    AppSignature:
+      name: X-App-Signature
+      in: header
+      required: true
+      description: 另需 X-App-Key / X-App-Timestamp / X-App-Nonce
+      schema: { type: string }
+
+  responses:
+    Error:
+      description: 统一错误
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: 触发限流（带 Retry-After）
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Audio:
+      description: 音频数据
+      content:
+        audio/*: { schema: { type: string, format: binary } }
+        application/json: { schema: { type: object } }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        requestId: { type: string }
+    PublicApp:
+      type: object
+      properties:
+        appKey: { type: string }
+        name: { type: string }
+        description: { type: string }
+        icon: { type: string, description: 'tabler:* 图标名，或图片图标的绝对 URL（/media/... 由 API 转换为 https://<平台>/media/...）' }
+        category: { type: string }
+        entryURL: { type: string, format: uri }
+        scopes: { type: array, items: { type: string } }
+        allowedOrigins: { type: array, items: { type: string } }
+        visibility: { type: string, enum: [public, logged_in, allowlist] }
+        version: { type: string }
+        ownerType: { type: string, enum: [official, partner] }
+        sort: { type: integer }
+        badge: { type: [string, 'null'] }
+        publishedAt: { type: [string, 'null'], format: date-time }
+    DevApp:
+      allOf:
+        - $ref: '#/components/schemas/PublicApp'
+        - type: object
+          properties:
+            id: { type: integer }
+            developerId: { type: [integer, 'null'] }
+            status: { type: string, enum: [draft, reviewing, approved, rejected, published, offline] }
+            requestedScopes: { type: array, items: { type: string } }
+            pinyin: { type: string }
+            keywords: { type: string }
+            webhookUrl: { type: string }
+            rejectReason: { type: string }
+            hostingMode: { type: string, enum: [internal, external] }
+            hostingBuild: { type: string }
+            hostingUpdatedAt: { type: [string, 'null'], format: date-time }
+            hostedAt: { type: [string, 'null'] }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+            deletedAt: { type: [string, 'null'], format: date-time }
+            secretMasked: { type: string }
+    DevAppDetail:
+      allOf:
+        - $ref: '#/components/schemas/DevApp'
+        - type: object
+          properties:
+            versions: { type: array, items: { $ref: '#/components/schemas/Version' } }
+            allowlist: { type: array, items: { type: string } }
+    Version:
+      type: object
+      properties:
+        id: { type: integer }
+        appId: { type: integer }
+        version: { type: string }
+        entryURL: { type: string, format: uri }
+        allowedOrigins: { type: array, items: { type: string } }
+        scopes: { type: array, items: { type: string } }
+        changelog: { type: string }
+        status: { type: string, enum: [draft, reviewing, approved, rejected, published, superseded] }
+        rejectReason: { type: string }
+        submittedAt: { type: [string, 'null'], format: date-time }
+        reviewedAt: { type: [string, 'null'], format: date-time }
+        publishedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+    Developer:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string, format: email }
+        displayName: { type: string }
+        role: { type: string, enum: [developer, admin] }
+        avatarUrl: { type: string }
+        authSource: { type: string }
+        authSourceLabel: { type: string }
+    Session:
+      type: object
+      properties:
+        userId: { type: string }
+        appKey: { type: string }
+        deviceId: { type: string }
+        scopes: { type: array, items: { type: string } }
+        expiresAt: { type: string, format: date-time }
+    Prefs:
+      type: object
+      properties:
+        recent:
+          type: array
+          items:
+            type: object
+            properties:
+              appKey: { type: string }
+              openedAt: { type: string, format: date-time }
+              app: { $ref: '#/components/schemas/PublicApp' }
+        favorites:
+          type: array
+          items:
+            type: object
+            properties:
+              appKey: { type: string }
+              addedAt: { type: string, format: date-time }
+              app: { $ref: '#/components/schemas/PublicApp' }
+        limits:
+          type: object
+          properties:
+            recent: { type: integer }
+            favorites: { type: integer }
+    Subscriptions:
+      type: object
+      properties:
+        topics:
+          type: array
+          items:
+            type: object
+            properties:
+              topic: { type: string }
+              enabled: { type: boolean }
+              quietHours:
+                type: [object, 'null']
+                properties:
+                  from: { type: string }
+                  to: { type: string }
+    Notification:
+      type: object
+      properties:
+        id: { type: integer }
+        type: { type: string }
+        title: { type: string }
+        body: { type: string }
+        appKey: { type: string }
+        readAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+    Device:
+      type: object
+      properties:
+        deviceID: { type: string }
+        platform: { type: string, enum: [android, ohos, windows, ios, web] }
+        appVersion: { type: string }
+        pushProvider: { type: string, enum: [fcm, hms, apns, wns, local] }
+        pushToken: { type: string, description: 掩码后的 token }
+        notificationEnabled: { type: boolean }
+        locale: { type: string }
+        lastSeenAt: { type: string, format: date-time }
+    AuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        actorType: { type: string }
+        actorId: { type: string }
+        action: { type: string }
+        targetType: { type: string }
+        targetKey: { type: string }
+        before: { type: [object, 'null'] }
+        after: { type: [object, 'null'] }
+        ip: { type: string }
+        requestId: { type: string }
+        createdAt: { type: string, format: date-time }
+    CreateApp:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 32 }
+        appKey: { type: string, pattern: '^[a-z][a-z0-9_-]{2,31}$' }
+        category: { type: string }
+        description: { type: string, maxLength: 200 }
+        icon: { type: string }
+        entryURL: { type: string, format: uri }
+        allowedOrigins: { type: array, items: { type: string, format: uri } }
+        scopes:
+          type: array
+          items: { type: string, enum: [profile:read, prefs:read, prefs:write, notifications:read, notifications:write, posts:read] }
+        visibility: { type: string, enum: [public, logged_in, allowlist] }
+        webhookUrl: { type: string, format: uri }
+        keywords: { type: string, maxLength: 200 }
+        sort: { type: integer }
+        ownerType: { type: string, enum: [official, partner] }

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>小程序演示 · 集市</title>
+  <link rel="stylesheet" href="/assets/demo.css" />
+</head>
+<body>
+  <div class="demo-stage">
+    <div class="phone" id="phone">
+      <div class="phone-status"><span>9:41</span><span class="phone-notch"></span><span>●●● ▮</span></div>
+      <div class="mp-capsule" id="capsule">
+        <button type="button" data-mp-action="menu" aria-label="更多">•••</button>
+        <button type="button" data-mp-action="close" aria-label="关闭">⊙</button>
+      </div>
+      <div class="mp-view" id="mp-view">
+        <div class="mp-loading"><div class="spinner"></div><p>正在进入小程序…</p></div>
+      </div>
+      <div class="mp-menu" id="mp-menu">
+        <button type="button" data-mp-action="favorite">☆ 添加到我的小程序</button>
+        <button type="button" data-mp-action="share">↗ 分享</button>
+        <button type="button" data-mp-action="refresh">↻ 刷新</button>
+        <button type="button" data-mp-action="copy">⧉ 复制链接</button>
+      </div>
+    </div>
+    <aside class="demo-panel">
+      <div class="dp-brand">集市小程序 · 容器演示</div>
+      <h1 id="dp-title">正在启动…</h1>
+      <p id="dp-desc" class="dp-desc">这个小程序运行在集市 App 内；官方小程序复用 App 登录态，第三方小程序使用平台会话。</p>
+      <div class="dp-card">
+        <div class="dp-row"><span>用户</span><b id="dp-user">—</b></div>
+        <div class="dp-row"><span>小程序</span><b id="dp-app">—</b></div>
+        <div class="dp-row"><span>会话有效期</span><b id="dp-exp">—</b></div>
+        <div class="dp-row"><span>权限</span><b id="dp-scopes">—</b></div>
+      </div>
+      <div class="dp-actions">
+        <button type="button" data-mp-action="favorite" id="dp-fav">☆ 添加到我的小程序</button>
+        <button type="button" data-mp-action="share">↗ 分享给好友</button>
+      </div>
+      <div class="dp-note">
+        <b>登录态由 App 与平台衔接。</b><br />
+        官方小程序在 App 内无感复用当前账号；第三方小程序使用隔离的会话与权限。
+      </div>
+      <a class="dp-link" href="/" target="_blank" rel="noreferrer">由集市小程序开放平台提供 →</a>
+    </aside>
+  </div>
+  <script src="/sdk/mp-client.js"></script>
+  <script type="module" src="/assets/demo.js"></script>
+</body>
+</html>

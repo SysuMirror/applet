@@ -1,0 +1,30 @@
+{
+  "name": "mp-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "集市小程序开放平台 —— 小程序目录、启动票据、开放平台、开发者注册与事件推送服务",
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "dev": "node --no-warnings --watch server.js",
+    "test": "node --no-warnings --test test/*.test.js",
+    "seed": "node --no-warnings scripts/seed.js",
+    "mint-token": "node --no-warnings scripts/mint-token.js",
+    "verify:ui": "node --no-warnings scripts/verify-ui.mjs",
+    "verify:responsive": "node --no-warnings scripts/verify-responsive.mjs",
+    "verify:external": "node --no-warnings scripts/verify-external.mjs"
+  },
+  "dependencies": {
+    "minio": "^8.0.7",
+    "mysql2": "^3.24.6",
+    "redis": "^6.3.1"
+  },
+  "license": "UNLICENSED",
+  "bin": {
+    "mp": "./cli/mp.mjs"
+  }
+}

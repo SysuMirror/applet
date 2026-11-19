@@ -1,0 +1,13 @@
+import { chromium } from 'playwright';
+const b=await chromium.launch({headless:true,args:['--no-sandbox']});
+const p=await b.newPage({viewport:{width:1440,height:1000}});
+await p.goto('https://applet.ssemarket.cn/#/login',{waitUntil:'networkidle'});
+await p.fill('form[data-form="login"] input[name="email"]','demo@mp.local');
+await p.fill('form[data-form="login"] input[name="password"]','demo123456');
+await p.click('form[data-form="login"] button[type="submit"]');
+await p.waitForSelector('.stat-grid');
+await p.goto('https://applet.ssemarket.cn/',{waitUntil:'networkidle'});
+await p.waitForTimeout(500);
+console.log('nav',await p.locator('.nav-links').innerText());
+await p.screenshot({path:'screenshots/32-landing-loggedin.png'});
+await b.close();
